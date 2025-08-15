@@ -4,6 +4,8 @@ from pynput.keyboard import Controller as KeyboardController, Key
 from pynput.mouse import Controller as MouseController, Button
 from collections import deque
 import numpy as np
+import socket
+import json
 
 keyboard = KeyboardController()
 mouse = MouseController()
@@ -11,6 +13,15 @@ mouse = MouseController()
 mp_hands = mp.solutions.hands
 mp_face = mp.solutions.face_mesh
 mp_drawing = mp.solutions.drawing_utils
+
+HOST = '127.0.0.1'
+PORT = 5005
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect((HOST, PORT))
+
+pressed_keys = set()
+pressed_mouse = set()
 
 # === Finger detection helpers ===
 def finger_up(hand_landmarks, tip_id, pip_id):
@@ -35,11 +46,27 @@ def get_finger_states(hand_landmarks, hand_label="Right"):
 
 # === Press / release helpers ===
 def press_key(k): 
-    try: keyboard.press(k)
+    try:
+        keyboard.press(k)
+        pressed_keys.add(str(k))
     except: pass
 
 def release_key(k):
-    try: keyboard.release(k)
+    try:
+        keyboard.release(k)
+        pressed_keys.discard(str(k))
+    except: pass
+
+def press_mouse(btn):
+    try:
+        mouse.press(btn)
+        pressed_mouse.add(str(btn))
+    except: pass
+
+def release_mouse(btn):
+    try:
+        mouse.release(btn)
+        pressed_mouse.discard(str(btn))
     except: pass
 
 # === Gesture buffer for stabilization ===
@@ -53,6 +80,10 @@ window_name = "Minecraft Gesture + Head Controller"
 head_sensitivity = 50   # mouse movement scaling
 angle_sensitivity = 18  # 1 normalized unit ≈ 10 degrees
 
+calibrated = False
+neutral_yaw = 0
+neutral_pitch = 0
+
 with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands, \
      mp_face.FaceMesh(max_num_faces=1, min_detection_confidence=0.5) as face_mesh:
 
@@ -62,6 +93,10 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
             break
         frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # --- Optional: Recalibrate if 'c' is pressed ---
+        if cv2.waitKey(1) & 0xFF == ord('c'):
+            calibrated = False
 
         # --- Process hands ---
         results_hands = hands.process(rgb)
@@ -91,47 +126,76 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
 
                 if hand_label == "Right":
                     # Movement / action gestures
-                    if all(state.values()):
-                        gesture_name = "Move Forward"; press_key('w')
-                    else: release_key('w')
+                    # Move Forward: peace sign (index + middle up)
+                    if state['index'] and state['middle'] and not any([state['ring'], state['pinky'], state['thumb']]):
+                        gesture_name = "Move Forward"
+                        press_key('w')
+                    else:
+                        release_key('w')
 
+                    # Move Backward: all fingers down
                     if not any(state.values()):
-                        gesture_name = "Move Backward"; press_key('s')
-                    else: release_key('s')
+                        gesture_name = "Move Backward"
+                        press_key('s')
+                    else:
+                        release_key('s')
 
-                    if state['index'] and not any([state['middle'], state['ring'], state['pinky']]):
-                        gesture_name = "Strafe Left"; press_key('a')
-                    else: release_key('a')
+                    # Strafe Left: index finger only
+                    if state['index'] and not any([state['middle'], state['ring'], state['pinky'], state['thumb']]):
+                        gesture_name = "Strafe Left"
+                        press_key('a')
+                    else:
+                        release_key('a')
 
+                    # Strafe Right: index + thumb L-shape
                     if state['index'] and state['thumb']:
-                        gesture_name = "Strafe Right"; press_key('d')
-                    else: release_key('d')
+                        gesture_name = "Strafe Right"
+                        press_key('d')
+                    else:
+                        release_key('d')
 
+                    # Jump: thumb up only
                     if state['thumb'] and not any([state['index'], state['middle'], state['ring'], state['pinky']]):
-                        gesture_name = "Jump"; press_key(Key.space)
-                    else: release_key(Key.space)
+                        gesture_name = "Jump"
+                        press_key(Key.space)
+                    else:
+                        release_key(Key.space)
 
+                    # Sneak: pinky only
                     if state['pinky'] and not any([state['thumb'], state['index'], state['middle'], state['ring']]):
-                        gesture_name = "Sneak"; press_key(Key.shift)
-                    else: release_key(Key.shift)
+                        gesture_name = "Sneak"
+                        press_key(Key.shift)
+                    else:
+                        release_key(Key.shift)
 
+                    # Place / Use: pinky + thumb
                     if state['pinky'] and state['thumb']:
-                        gesture_name = "Place / Use"; mouse.press(Button.right)
-                    else: mouse.release(Button.right)
+                        gesture_name = "Place / Use"
+                        press_mouse(Button.right)
+                    else:
+                        release_mouse(Button.right)
 
+                    # Open Inventory: all fingers up but thumb/pinky far apart
                     if all(state.values()) and abs(hand_landmarks.landmark[4].x - hand_landmarks.landmark[20].x) > 0.5:
-                        gesture_name = "Open Inventory"; press_key('e')
-                    else: release_key('e')
+                        gesture_name = "Open Inventory"
+                        press_key('e')
+                    else:
+                        release_key('e')
 
+                    # Sprint: index + middle + ring
                     if state['index'] and state['middle'] and state['ring']:
-                        gesture_name = "Sprint"; press_key(Key.ctrl)
-                    else: release_key(Key.ctrl)
+                        gesture_name = "Sprint"
+                        press_key(Key.ctrl)
+                    else:
+                        release_key(Key.ctrl)
 
                 elif hand_label == "Left":
                     # Attack / hotbar / drop gestures
                     if state['index'] and state['middle'] and not state['ring']:
-                        gesture_name = "Attack"; mouse.press(Button.left)
-                    else: mouse.release(Button.left)
+                        gesture_name = "Attack"
+                        press_mouse(Button.left)
+                    else:
+                        release_mouse(Button.left)
 
                     # Hotbar 1–9
                     if state['pinky'] and not any([state['ring'], state['middle'], state['index']]):
@@ -190,9 +254,16 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
             left_eye = face_landmarks[33]
             right_eye = face_landmarks[263]
 
-            # Normalized yaw/pitch
-            yaw = (nose.x - (left_eye.x + right_eye.x)/2)
-            pitch = nose.y - ((left_eye.y + right_eye.y)/2)
+            # --- Calibration step ---
+            if not calibrated:
+                neutral_yaw = nose.x - (left_eye.x + right_eye.x)/2
+                neutral_pitch = ((left_eye.y + right_eye.y)/2 - nose.y)
+                calibrated = True
+                print("Neutral head position calibrated!")
+
+            # Normalized yaw/pitch (subtract neutral)
+            yaw = (nose.x - (left_eye.x + right_eye.x)/2) - neutral_yaw
+            pitch = ((left_eye.y + right_eye.y)/2 - nose.y) - neutral_pitch
 
             # Convert to degrees
             yaw_deg = yaw * angle_sensitivity
@@ -215,6 +286,21 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
 
         # --- Terminal output ---
         print(f"Right Hand: {gestures_detected['Right']}  |  Left Hand: {gestures_detected['Left']}  | Yaw={yaw_deg:.1f}°, Pitch={pitch_deg:.1f}°")
+
+        # --- Send data over socket ---
+        data = {
+            "right_hand": gestures_detected['Right'],
+            "left_hand": gestures_detected['Left'],
+            "yaw": yaw_deg,
+            "pitch": pitch_deg,
+            "pressed_keys": list(pressed_keys),
+            "pressed_mouse": list(pressed_mouse)
+        }
+        try:
+            sock.sendall((json.dumps(data) + "\n").encode())
+            print("Sent:", data)
+        except Exception as e:
+            print("Socket send error:", e)
 
         # --- On-screen overlay ---
         y0 = 20
