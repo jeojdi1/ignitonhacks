@@ -9,7 +9,7 @@ mouse = MouseController()
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 
-# === Finger detection helper ===
+# === Finger detection helpers ===
 def finger_up(hand_landmarks, tip_id, pip_id):
     return hand_landmarks.landmark[tip_id].y < hand_landmarks.landmark[pip_id].y
 
@@ -41,7 +41,18 @@ GESTURE_MAP = {
     "Pinky only": "Sneak (SHIFT)",
     "Index + Middle": "Attack (LMB)",
     "Pinky + Thumb": "Place/Use (RMB)",
-    "Spread hand": "Open Inventory (E)"
+    "Spread hand": "Open Inventory (E)",
+    "Hotbar 1": "Slot 1",
+    "Hotbar 2": "Slot 2",
+    "Hotbar 3": "Slot 3",
+    "Hotbar 4": "Slot 4",
+    "Hotbar 5": "Slot 5",
+    "Hotbar 6": "Slot 6",
+    "Hotbar 7": "Slot 7",
+    "Hotbar 8": "Slot 8",
+    "Hotbar 9": "Slot 9",
+    "Drop Item": "Q",
+    "Sprint": "Ctrl"
 }
 
 cap = cv2.VideoCapture(0)
@@ -57,14 +68,29 @@ with mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7, min_tracking_
         results = hands.process(rgb)
 
         if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
+            hand_landmarks = results.multi_hand_landmarks[0]
+
+            # === Palm facing camera check ===
+            wrist = hand_landmarks.landmark[0]
+            middle_mcp = hand_landmarks.landmark[9]
+            pinky_mcp = hand_landmarks.landmark[17]
+            index_mcp = hand_landmarks.landmark[5]
+
+            # Z-based check: wrist closer to camera than middle_mcp
+            palm_facing = wrist.z < middle_mcp.z
+
+            # Optional: horizontal check across palm
+            palm_vector_x = pinky_mcp.x - index_mcp.x
+            palm_vector_y = pinky_mcp.y - index_mcp.y
+            if abs(palm_vector_x) < abs(palm_vector_y):
+                palm_facing = False  # palm likely sideways
+
+            if palm_facing:
                 mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
                 state = get_finger_states(hand_landmarks)
-
-                # Default no gesture
                 active_gesture = "None"
 
-                # === Gesture conditions ===
+                # === Movement gestures ===
                 if all(state.values()):
                     press_key('w'); active_gesture = "All fingers up"
                 else: release_key('w')
@@ -89,6 +115,7 @@ with mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7, min_tracking_
                     press_key(Key.shift); active_gesture = "Pinky only"
                 else: release_key(Key.shift)
 
+                # === Combat gestures ===
                 if state['index'] and state['middle'] and not state['ring']:
                     mouse.press(Button.left); active_gesture = "Index + Middle"
                 else: mouse.release(Button.left)
@@ -97,14 +124,37 @@ with mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7, min_tracking_
                     mouse.press(Button.right); active_gesture = "Pinky + Thumb"
                 else: mouse.release(Button.right)
 
+                # === Inventory ===
                 if all(state.values()) and abs(hand_landmarks.landmark[4].x - hand_landmarks.landmark[20].x) > 0.5:
                     press_key('e'); active_gesture = "Spread hand"
                 else: release_key('e')
 
+                # === Hotbar slots example (1-5) ===
+                if state['pinky'] and not any([state['ring'], state['middle'], state['index']]):
+                    press_key('1'); active_gesture = "Hotbar 1"
+                if state['ring'] and not any([state['middle'], state['index']]):
+                    press_key('2'); active_gesture = "Hotbar 2"
+                if state['middle'] and not state['index']:
+                    press_key('3'); active_gesture = "Hotbar 3"
+                if state['index'] and not state['middle']:
+                    press_key('4'); active_gesture = "Hotbar 4"
+                if state['thumb'] and not any([state['index'], state['middle'], state['ring'], state['pinky']]):
+                    press_key('5'); active_gesture = "Hotbar 5"
+
+                # === Sprint example ===
+                if state['index'] and state['middle'] and state['ring']:
+                    press_key(Key.ctrl); active_gesture = "Sprint"
+                else:
+                    release_key(Key.ctrl)
+
+            else:
+                # Hand not palm-facing → ignore
+                active_gesture = "None"
+
         # === Terminal output ===
         print(f"Gesture: {active_gesture} → {GESTURE_MAP.get(active_gesture, 'No action')}")
 
-        # === On-screen instructions ===
+        # === On-screen overlay ===
         y0 = 20
         for g, action in GESTURE_MAP.items():
             color = (0, 255, 0) if g == active_gesture else (255, 255, 255)
@@ -112,7 +162,7 @@ with mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7, min_tracking_
             y0 += 20
 
         cv2.imshow("Minecraft Gesture Controller", frame)
-        if cv2.waitKey(1) & 0xFF == 27:  # ESC to quit
+        if cv2.waitKey(1) & 0xFF == 27:
             break
 
 cap.release()
